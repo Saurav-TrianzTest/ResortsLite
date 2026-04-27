@@ -1,0 +1,40 @@
+# Compiled class files
+*.class
+target/
+*.jar
+*.war
+*.ear
+
+# Log files
+*.log
+logs/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+*.env
+
+# Reports and backups
+reports/
+backups/
+/tmp/
+
+# Database files
+*.db
+*.sqlite
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd

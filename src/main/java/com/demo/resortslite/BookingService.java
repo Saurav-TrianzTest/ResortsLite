@@ -1,106 +1,206 @@
 package com.demo.resortslite;
 
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.demo.resortslite.entity.Booking;
+import com.demo.resortslite.repository.BookingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
 public class BookingService {
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private BookingRepository bookingRepository;
 
-    // VIOLATION [Security Health / Critical]: Hardcoded database credentials in source code.
-    // If this repo is pushed to GitHub (even private), credentials are permanently exposed
-    // in git history. AWS Secrets Manager or Parameter Store must be used instead.
-    private static final String DB_HOST = "db-prod.resorts-internal.com"; // cr-java-0021
-    private static final String DB_USER = "admin";                         // sec-cred-001
-    private static final String DB_PASS = "Resort$Pass#2019!";             // sec-cred-001
+    // FIXED: Externalized database credentials to environment variables
+    // Use AWS Secrets Manager or Parameter Store in production
+    @Value("${spring.datasource.url}")
+    private String dbUrl;
 
-    // VIOLATION cr-java-0021 [Cloud Compatibility / Mandatory]: Hardcoded infrastructure
-    // hostname. Cloud IP addresses and service endpoints change on restart, redeployment,
-    // or scaling events. Must be externalised to environment variables / Parameter Store.
-    private static final String PAYMENT_API = "http://10.0.1.45:9090/payments/charge"; // cr-java-0021, cr-java-0088
+    // FIXED: Externalized payment API endpoint to environment variable
+    @Value("${app.payment.endpoint}")
+    private String paymentApi;
 
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
+    /**
+     * Creates a new booking in PostgreSQL database using JPA.
+     * Uses parameterized queries via JPA Repository to prevent SQL injection.
+     * 
+     * @param guestName the guest name
+     * @param roomType the room type
+     * @param checkIn check-in date (yyyy-MM-dd format)
+     * @param checkOut check-out date (yyyy-MM-dd format)
+     * @return booking details map
+     */
     public Map<String, Object> createBooking(String guestName, String roomType,
                                               String checkIn, String checkOut) {
         String bookingId = "BK-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
-        // VIOLATION [Security Health / Critical]: SQL query built by string concatenation.
-        // An attacker can pass guestName = "'; DROP TABLE bookings; --" to destroy data.
-        // Use parameterised queries (JdbcTemplate with '?') to prevent SQL injection.
-        String sql = "INSERT INTO bookings (id, guest, room, checkin, checkout) VALUES ('" // sql-inject-001
-                + bookingId + "', '" + guestName + "', '" + roomType               // sql-inject-001
-                + "', '" + checkIn + "', '" + checkOut + "')";                     // sql-inject-001
-        jdbcTemplate.execute(sql);
+        // FIXED: Using JPA Repository with parameterized queries (SQL injection safe)
+        Booking booking = new Booking();
+        booking.setId(bookingId);
+        booking.setGuest(guestName);
+        booking.setRoom(roomType);
+        booking.setCheckin(LocalDate.parse(checkIn, DATE_FORMATTER));
+        booking.setCheckout(LocalDate.parse(checkOut, DATE_FORMATTER));
 
-        // Updated to use SHA-256 instead of MD5 for secure hashing
+        // Generate confirmation code
         String confirmCode = sha256Hash(bookingId + guestName);
+        booking.setConfirmationCode(confirmCode);
 
-        Map<String, Object> booking = new HashMap<>();
-        booking.put("bookingId", bookingId);
-        booking.put("guestName", guestName);
-        booking.put("roomType", roomType);
-        booking.put("checkIn", checkIn);
-        booking.put("checkOut", checkOut);
-        booking.put("confirmationCode", confirmCode);
-        booking.put("dbHost", DB_HOST);
-        return booking;
-    }
+        // Save to PostgreSQL database
+        bookingRepository.save(booking);
 
-    public Map<String, Object> getBookingById(String bookingId) {
-        // VIOLATION [Security Health / Critical]: SQL injection via string concatenation.
-        // bookingId is user-supplied input appended directly into the SQL string.
-        String sql = "SELECT * FROM bookings WHERE id = '" + bookingId + "'"; // sql-inject-001
         Map<String, Object> result = new HashMap<>();
-        try {
-            result = jdbcTemplate.queryForMap(sql);
-        } catch (Exception e) {
-            result.put("error", "Booking not found: " + bookingId);
-        }
+        result.put("bookingId", bookingId);
+        result.put("guestName", guestName);
+        result.put("roomType", roomType);
+        result.put("checkIn", checkIn);
+        result.put("checkOut", checkOut);
+        result.put("confirmationCode", confirmCode);
+        result.put("dbUrl", dbUrl);
         return result;
     }
 
-    // VIOLATION [Code Sustainability / High]: High cyclomatic complexity.
-    // This method has 9+ decision branches. Automated transformation tools flag methods
-    // above complexity threshold as high maintenance risk and transformation blockers.
+    /**
+     * Retrieves booking by ID from PostgreSQL database.
+     * Uses JPA Repository with parameterized query (SQL injection safe).
+     * 
+     * @param bookingId the booking ID
+     * @return booking details map
+     */
+    public Map<String, Object> getBookingById(String bookingId) {
+        Map<String, Object> result = new HashMap<>();
+        
+        // FIXED: Using JPA Repository findById (parameterized query, SQL injection safe)
+        Optional<Booking> bookingOpt = bookingRepository.findById(bookingId);
+        
+        if (bookingOpt.isPresent()) {
+            Booking booking = bookingOpt.get();
+            result.put("bookingId", booking.getId());
+            result.put("guestName", booking.getGuest());
+            result.put("roomType", booking.getRoom());
+            result.put("checkIn", booking.getCheckin().toString());
+            result.put("checkOut", booking.getCheckout().toString());
+            result.put("confirmationCode", booking.getConfirmationCode());
+            result.put("createdAt", booking.getCreatedAt().toString());
+        } else {
+            result.put("error", "Booking not found: " + bookingId);
+        }
+        
+        return result;
+    }
+
+    /**
+     * Calculates room price based on room type, nights, season, and loyalty level.
+     * REFACTORED: Reduced cyclomatic complexity by extracting logic to helper methods.
+     * 
+     * @param roomType the room type
+     * @param nights number of nights
+     * @param season the season (PEAK, OFF, REGULAR)
+     * @param loyalty loyalty level (GOLD, PLATINUM, DIAMOND)
+     * @return formatted price string
+     */
     public String calculateRoomPrice(String roomType, int nights, String season, String loyalty) {
-        double basePrice = 0;
-        if (roomType.equals("STANDARD")) { basePrice = 120.0; }
-        else if (roomType.equals("DELUXE")) { basePrice = 200.0; }
-        else if (roomType.equals("SUITE")) { basePrice = 350.0; }
-        else if (roomType.equals("VILLA")) { basePrice = 600.0; }
-        else { basePrice = 120.0; }
-        if (season.equals("PEAK")) { basePrice = basePrice * 1.5; }
-        else if (season.equals("OFF")) { basePrice = basePrice * 0.8; }
-        if (loyalty.equals("GOLD")) { basePrice = basePrice * 0.9; }
-        else if (loyalty.equals("PLATINUM")) { basePrice = basePrice * 0.8; }
-        else if (loyalty.equals("DIAMOND")) { basePrice = basePrice * 0.7; }
-        if (nights >= 7) { basePrice = basePrice * 0.95; }
-        else if (nights >= 14) { basePrice = basePrice * 0.90; }
+        double basePrice = getBasePrice(roomType);
+        basePrice = applySeasonalAdjustment(basePrice, season);
+        basePrice = applyLoyaltyDiscount(basePrice, loyalty);
+        basePrice = applyLengthOfStayDiscount(basePrice, nights);
+        
         double total = basePrice * nights;
         return String.format("%.2f", total);
     }
 
-    public boolean isRoomAvailable(String roomType) {
-        // VIOLATION [Code Sustainability / Medium]: Duplicated validation logic.
-        // Same room type validation is repeated here and in calculateRoomPrice.
-        // Should be extracted to a shared RoomType enum or validator.
-        if (!roomType.equals("STANDARD") && !roomType.equals("DELUXE") // dup-logic-001
-                && !roomType.equals("SUITE") && !roomType.equals("VILLA")) { // dup-logic-001
-            return false;
-        }
-        return true;
+    /**
+     * Gets base price for room type.
+     * Extracted from calculateRoomPrice to reduce complexity.
+     */
+    private double getBasePrice(String roomType) {
+        return switch (roomType) {
+            case "STANDARD" -> 120.0;
+            case "DELUXE" -> 200.0;
+            case "SUITE" -> 350.0;
+            case "VILLA" -> 600.0;
+            default -> 120.0;
+        };
     }
 
+    /**
+     * Applies seasonal price adjustment.
+     * Extracted from calculateRoomPrice to reduce complexity.
+     */
+    private double applySeasonalAdjustment(double basePrice, String season) {
+        return switch (season) {
+            case "PEAK" -> basePrice * 1.5;
+            case "OFF" -> basePrice * 0.8;
+            default -> basePrice;
+        };
+    }
+
+    /**
+     * Applies loyalty discount.
+     * Extracted from calculateRoomPrice to reduce complexity.
+     */
+    private double applyLoyaltyDiscount(double basePrice, String loyalty) {
+        return switch (loyalty) {
+            case "GOLD" -> basePrice * 0.9;
+            case "PLATINUM" -> basePrice * 0.8;
+            case "DIAMOND" -> basePrice * 0.7;
+            default -> basePrice;
+        };
+    }
+
+    /**
+     * Applies length of stay discount.
+     * Extracted from calculateRoomPrice to reduce complexity.
+     */
+    private double applyLengthOfStayDiscount(double basePrice, int nights) {
+        if (nights >= 14) {
+            return basePrice * 0.90;
+        } else if (nights >= 7) {
+            return basePrice * 0.95;
+        }
+        return basePrice;
+    }
+
+    /**
+     * Checks if room type is available.
+     * REFACTORED: Uses shared validation method to eliminate code duplication.
+     * 
+     * @param roomType the room type
+     * @return true if room type is valid
+     */
+    public boolean isRoomAvailable(String roomType) {
+        return isValidRoomType(roomType);
+    }
+
+    /**
+     * Validates room type.
+     * Shared validation method to eliminate duplication.
+     */
+    private boolean isValidRoomType(String roomType) {
+        return roomType.equals("STANDARD") || roomType.equals("DELUXE") 
+            || roomType.equals("SUITE") || roomType.equals("VILLA");
+    }
+
+    /**
+     * Generates report for the specified month.
+     * 
+     * @param month the month for report generation
+     * @return report generation message
+     */
     public String generateReport(String month) {
-        return "Report generation triggered for: " + month + " via " + PAYMENT_API;
+        return "Report generation triggered for: " + month + " via " + paymentApi;
     }
 
     /**

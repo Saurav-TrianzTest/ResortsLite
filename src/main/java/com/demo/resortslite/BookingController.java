@@ -1,12 +1,17 @@
 package com.demo.resortslite;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 
-import jakarta.servlet.http.HttpSession;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * REST Controller for booking operations.
+ * FIXED: Removed in-memory cache and HTTP session usage for cloud compatibility.
+ * FIXED: Externalized service endpoints to environment variables.
+ */
 @RestController
 @RequestMapping("/api/bookings")
 public class BookingController {
@@ -14,27 +19,35 @@ public class BookingController {
     @Autowired
     private BookingService bookingService;
 
-    // VIOLATION cr-java-0067 [Cloud Compatibility / Mandatory]: In-memory cache without TTL
-    // breaks horizontal scaling — cache is instance-local, invisible to other EC2 instances
-    private static final Map<String, Object> bookingCache = new HashMap<>(); // cr-java-0067
+    // FIXED: Externalized inventory endpoint to environment variable
+    @Value("${app.inventory.endpoint}")
+    private String inventoryUrl;
 
+    /**
+     * Creates a new booking.
+     * FIXED: Removed HTTP session storage for cloud compatibility.
+     * FIXED: Removed in-memory cache for horizontal scaling support.
+     * 
+     * @param guestName guest name
+     * @param roomType room type
+     * @param checkIn check-in date
+     * @param checkOut check-out date
+     * @return booking confirmation response
+     */
     @PostMapping("/create")
     public Map<String, Object> createBooking(
             @RequestParam String guestName,
             @RequestParam String roomType,
             @RequestParam String checkIn,
-            @RequestParam String checkOut,
-            HttpSession session) {
+            @RequestParam String checkOut) {
 
         Map<String, Object> booking = bookingService.createBooking(guestName, roomType, checkIn, checkOut);
 
-        // VIOLATION cr-java-0065 [Cloud Compatibility / Mandatory]: Booking state stored in
-        // HTTP session memory. AWS ALB distributes requests across EC2 instances — session
-        // data on instance A is invisible to instance B. Auto-scaling and failover breaks.
-        session.setAttribute("lastBooking", booking); // cr-java-0065
-        session.setAttribute("guestName", guestName); // cr-java-0065
+        // FIXED: Removed session.setAttribute() calls - use distributed cache (Redis/ElastiCache) 
+        // or database for stateful data in cloud environments
 
-        bookingCache.put((String) booking.get("bookingId"), booking);
+        // FIXED: Removed in-memory bookingCache - use distributed cache (Redis/ElastiCache)
+        // for caching in horizontally scaled cloud deployments
 
         Map<String, Object> response = new HashMap<>();
         response.put("status", "confirmed");
@@ -42,28 +55,36 @@ public class BookingController {
         return response;
     }
 
+    /**
+     * Gets booking status by ID.
+     * FIXED: Removed HTTP session dependency for cloud compatibility.
+     * 
+     * @param bookingId the booking ID
+     * @return booking status response
+     */
     @GetMapping("/status/{bookingId}")
-    public Map<String, Object> getBookingStatus(
-            @PathVariable String bookingId,
-            HttpSession session) {
+    public Map<String, Object> getBookingStatus(@PathVariable String bookingId) {
 
-        // VIOLATION cr-java-0065 [Cloud Compatibility / Mandatory]: Reading business state
-        // from HTTP session — will return null on any other instance in the cluster.
-        String lastGuest = (String) session.getAttribute("guestName"); // cr-java-0065
+        // FIXED: Removed session.getAttribute() - retrieve data from database or distributed cache
 
         Map<String, Object> result = new HashMap<>();
         result.put("bookingId", bookingId);
-        result.put("sessionGuest", lastGuest);
         result.put("details", bookingService.getBookingById(bookingId));
         return result;
     }
 
+    /**
+     * Checks room availability.
+     * FIXED: Externalized inventory service URL to environment variable.
+     * RECOMMENDATION: Use HTTPS for service-to-service communication in production.
+     * 
+     * @param roomType the room type
+     * @return availability response
+     */
     @GetMapping("/availability")
     public Map<String, Object> checkAvailability(@RequestParam String roomType) {
-        // VIOLATION cr-java-0088 [Cloud Compatibility / Mandatory]: Plain HTTP call to
-        // internal inventory service. AWS ALB, WAF, and Well-Architected security review
-        // enforce HTTPS. This call will be blocked or flagged in a cloud-native setup.
-        String inventoryUrl = "http://inventory-service.internal:8081/rooms/available"; // cr-java-0088
+        // FIXED: Inventory URL now externalized to ${app.inventory.endpoint}
+        // RECOMMENDATION: Update to HTTPS in production for AWS ALB/WAF compliance
 
         Map<String, Object> response = new HashMap<>();
         response.put("roomType", roomType);
@@ -72,16 +93,23 @@ public class BookingController {
         return response;
     }
 
+    /**
+     * Downloads monthly report.
+     * FIXED: Removed hardcoded file path for container compatibility.
+     * RECOMMENDATION: Use cloud object storage (S3/Azure Blob) for report storage.
+     * 
+     * @param month the month for report
+     * @return report download response
+     */
     @GetMapping("/report/download")
     public Map<String, Object> downloadReport(@RequestParam String month) {
-        // VIOLATION czr-java-001 [Software Portability / Mandatory]: Hardcoded absolute
-        // file path. This path does not exist inside a container image. Container images
-        // have their own isolated file systems — /var/legacy/reports won't be present.
-        String reportPath = "/var/legacy/reports/" + month + "_bookings.pdf"; // czr-java-001
+        // FIXED: Removed hardcoded /var/legacy/reports path
+        // RECOMMENDATION: Use S3 bucket or volume mount with environment variable
 
         Map<String, Object> response = new HashMap<>();
-        response.put("reportPath", reportPath);
+        response.put("month", month);
         response.put("message", bookingService.generateReport(month));
+        response.put("recommendation", "Use cloud object storage (S3/Azure Blob) for report storage");
         return response;
     }
 }

@@ -1,5 +1,6 @@
 package com.demo.resortslite;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -10,34 +11,51 @@ import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * Service for generating and managing reports.
+ * FIXED: Externalized file paths and configuration for cloud/container compatibility.
+ */
 @Service
 public class ReportService {
 
-    // VIOLATION czr-java-001 [Software Portability / Mandatory]: Hardcoded absolute path.
-    // /var/legacy/reports does not exist in a Docker container image. Breaks containerisation.
-    // Must use volume mounts, cloud object storage (S3 / Azure Blob), or environment variable.
-    private static final String REPORT_BASE_PATH = "/var/legacy/reports/"; // czr-java-001
+    // FIXED: Externalized report path to environment variable for container compatibility
+    // Use volume mounts or cloud object storage (S3/Azure Blob) in production
+    @Value("${app.report.path:/tmp/reports/}")
+    private String reportBasePath;
 
-    // VIOLATION czr-java-001 [Software Portability / Mandatory]: Windows-style absolute path
-    // will fail on any Linux-based container or cloud host. Hard dependency on OS path structure.
-    private static final String BACKUP_PATH = "C:\\ResortBackups\\nightly\\"; // czr-java-001
+    // FIXED: Externalized backup path to environment variable
+    @Value("${app.backup.path:/tmp/backups/}")
+    private String backupPath;
 
-    // VIOLATION [Software Portability / High]: Fixed server port hardcoded in application logic.
-    // Container orchestration (ECS / EKS) dynamically assigns ports. Hardcoded ports prevent
-    // dynamic port binding required for modern container deployment and service discovery.
-    private static final int SERVER_PORT = 8080; // czr-port-001
+    // FIXED: Externalized server port to environment variable for dynamic port binding
+    @Value("${server.port:8080}")
+    private int serverPort;
+
+    // FIXED: Externalized report service URL to environment variable
+    @Value("${app.report.service.url:https://reports.resorts-internal.com}")
+    private String reportServiceUrl;
 
     // Thread-safe DateTimeFormatter for Java 17
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+    /**
+     * Generates a monthly report in CSV format.
+     * FIXED: Uses externalized report path from environment variable.
+     * RECOMMENDATION: Use cloud object storage (S3/Azure Blob) instead of local file system.
+     * 
+     * @param month the month for the report
+     * @param year the year for the report
+     * @return report generation result map
+     */
     public Map<String, Object> generateMonthlyReport(String month, String year) {
         String fileName = "resort_report_" + month + "_" + year + ".csv";
-        String fullPath = REPORT_BASE_PATH + fileName; // czr-java-001
+        String fullPath = reportBasePath + fileName;
 
         Map<String, Object> result = new HashMap<>();
 
         try {
-            File reportDir = new File(REPORT_BASE_PATH); // czr-java-001
+            // FIXED: Uses externalized reportBasePath from environment variable
+            File reportDir = new File(reportBasePath);
             if (!reportDir.exists()) {
                 reportDir.mkdirs();
             }
@@ -50,7 +68,8 @@ public class ReportService {
 
             result.put("status", "generated");
             result.put("path", fullPath);
-            result.put("serverPort", SERVER_PORT); // czr-port-001
+            result.put("serverPort", serverPort);
+            result.put("recommendation", "Consider using S3 or Azure Blob Storage for production");
 
         } catch (IOException e) {
             result.put("status", "error");
@@ -60,22 +79,33 @@ public class ReportService {
         return result;
     }
 
-    // VIOLATION [Code Sustainability / Medium]: No JavaDoc or method documentation.
-    // Missing documentation is flagged across all public methods in the codebase.
-    // This increases onboarding time and transformation risk for automated tools.
-    public String buildReportDownloadUrl(String reportName) { // doc-missing-001
-        // VIOLATION cr-java-0088 [Cloud Compatibility / Mandatory]: Plain HTTP URL
-        // hardcoded for report download. Cloud security standards enforce HTTPS.
-        return "http://reports.resorts-internal.com:8080/download/" + reportName; // cr-java-0088
+    /**
+     * Builds a report download URL.
+     * FIXED: Uses HTTPS and externalized service URL for cloud security compliance.
+     * 
+     * @param reportName the report name
+     * @return the download URL
+     */
+    public String buildReportDownloadUrl(String reportName) {
+        // FIXED: Uses HTTPS and externalized reportServiceUrl from environment variable
+        return reportServiceUrl + "/download/" + reportName;
     }
 
-    public Map<String, Object> getSystemInfo() { // doc-missing-001
+    /**
+     * Gets system information including configuration paths.
+     * FIXED: Returns externalized configuration values from environment variables.
+     * 
+     * @return system information map
+     */
+    public Map<String, Object> getSystemInfo() {
         String timestamp = LocalDateTime.now().format(DATE_TIME_FORMATTER);
         Map<String, Object> info = new HashMap<>();
-        info.put("reportPath", REPORT_BASE_PATH);  // czr-java-001
-        info.put("backupPath", BACKUP_PATH);        // czr-java-001
-        info.put("serverPort", SERVER_PORT);        // czr-port-001
+        info.put("reportPath", reportBasePath);
+        info.put("backupPath", backupPath);
+        info.put("serverPort", serverPort);
+        info.put("reportServiceUrl", reportServiceUrl);
         info.put("generatedAt", timestamp);
+        info.put("note", "All paths are externalized via environment variables for cloud compatibility");
         return info;
     }
 }
