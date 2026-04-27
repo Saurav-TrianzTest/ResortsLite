@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: resortslite-postgres
+    environment:
+      POSTGRES_DB: resortdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/main/resources/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - resortslite-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resortslite-app
+    environment:
+      SPRING_PROFILES_ACTIVE: postgresql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: resortdb
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DDL_AUTO: update
+      INIT_MODE: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - resortslite-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  resortslite-network:
+    driver: bridge

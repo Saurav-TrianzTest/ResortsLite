@@ -1,0 +1,75 @@
+# Compiled class files
+*.class
+
+# Log files
+*.log
+
+# Package Files
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE Files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Environment Variables (contains sensitive data)
+.env
+.env.local
+.env.production
+
+# Database Files
+*.db
+*.sqlite
+*.sql.backup
+
+# Application Logs
+logs/
+*.log.*
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Reports and Backups
+reports/
+backups/
+/var/legacy/reports/
+C:/ResortBackups/
+
+# Docker
+.dockerignore
+
+# Spring Boot
+spring-boot-devtools.properties
