@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  resortslite-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: resortslite:latest
+    container_name: resortslite-app
+    ports:
+      - "8080:8080"
+    environment:
+      # Application Configuration
+      SERVER_PORT: 8080
+      SPRING_PROFILES_ACTIVE: docker
+      
+      # JVM Configuration
+      JAVA_OPTS: "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+      
+      # Database Configuration (H2 in-memory for local development)
+      DB_URL: "jdbc:h2:mem:resortdb;DB_CLOSE_DELAY=-1"
+      DB_USERNAME: "sa"
+      DB_PASSWORD: ""
+      
+      # External Service Endpoints (configure as needed)
+      PAYMENT_ENDPOINT: "http://payment-svc.internal:9090/charge"
+      INVENTORY_ENDPOINT: "http://inventory-svc.internal:8081/rooms"
+      NOTIFICATION_ENDPOINT: "http://notify.internal:7070/send"
+      
+      # Redis Configuration (external service - configure connection details)
+      REDIS_HOST: "redis.external.com"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      
+      # AWS S3 Configuration
+      S3_BUCKET_NAME: "resortslite-reports"
+      AWS_REGION: "us-east-1"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+      
+      # Timezone
+      TZ: "UTC"
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  logs:
+  config:
