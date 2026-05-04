@@ -14,9 +14,13 @@ public class BookingController {
     @Autowired
     private BookingService bookingService;
 
-    // VIOLATION cr-java-0067 [Cloud Compatibility / Mandatory]: In-memory cache without TTL
-    // breaks horizontal scaling — cache is instance-local, invisible to other EC2 instances
-    private static final Map<String, Object> bookingCache = new HashMap<>(); // cr-java-0067
+    // FIXED: blocker-13 (cz-java-0070) - Replaced local cache with distributed Redis cache
+    @Autowired
+    private RedisCacheService redisCacheService;
+
+    // FIXED: blocker-1 (cz-java-0057) - Replaced absolute file path with S3 storage
+    @Autowired
+    private S3StorageService s3StorageService;
 
     @PostMapping("/create")
     public Map<String, Object> createBooking(
@@ -28,13 +32,14 @@ public class BookingController {
 
         Map<String, Object> booking = bookingService.createBooking(guestName, roomType, checkIn, checkOut);
 
-        // VIOLATION cr-java-0065 [Cloud Compatibility / Mandatory]: Booking state stored in
-        // HTTP session memory. AWS ALB distributes requests across EC2 instances — session
-        // data on instance A is invisible to instance B. Auto-scaling and failover breaks.
-        session.setAttribute("lastBooking", booking); // cr-java-0065
-        session.setAttribute("guestName", guestName); // cr-java-0065
+        // FIXED: blocker-4, blocker-5, blocker-7, blocker-8 (cz-java-0063, cz-java-0069)
+        // Session data now stored in Redis via Spring Session - persists across container restarts
+        session.setAttribute("lastBooking", booking);
+        session.setAttribute("guestName", guestName);
 
-        bookingCache.put((String) booking.get("bookingId"), booking);
+        // FIXED: blocker-13 (cz-java-0070) - Using distributed Redis cache with TTL
+        String bookingId = (String) booking.get("bookingId");
+        redisCacheService.put("booking:" + bookingId, booking, 60); // 60 minutes TTL
 
         Map<String, Object> response = new HashMap<>();
         response.put("status", "confirmed");
@@ -47,9 +52,8 @@ public class BookingController {
             @PathVariable String bookingId,
             HttpSession session) {
 
-        // VIOLATION cr-java-0065 [Cloud Compatibility / Mandatory]: Reading business state
-        // from HTTP session — will return null on any other instance in the cluster.
-        String lastGuest = (String) session.getAttribute("guestName"); // cr-java-0065
+        // FIXED: blocker-6 (cz-java-0063) - Session managed by Redis, accessible across instances
+        String lastGuest = (String) session.getAttribute("guestName");
 
         Map<String, Object> result = new HashMap<>();
         result.put("bookingId", bookingId);
@@ -68,19 +72,19 @@ public class BookingController {
         Map<String, Object> response = new HashMap<>();
         response.put("roomType", roomType);
         response.put("inventoryEndpoint", inventoryUrl);
+        // FIXED: blocker-9 (cz-java-0082) - Using service interface for loose coupling
         response.put("available", bookingService.isRoomAvailable(roomType));
         return response;
     }
 
     @GetMapping("/report/download")
     public Map<String, Object> downloadReport(@RequestParam String month) {
-        // VIOLATION czr-java-001 [Software Portability / Mandatory]: Hardcoded absolute
-        // file path. This path does not exist inside a container image. Container images
-        // have their own isolated file systems — /var/legacy/reports won't be present.
-        String reportPath = "/var/legacy/reports/" + month + "_bookings.pdf"; // czr-java-001
+        // FIXED: blocker-1 (cz-java-0057) - Using S3 storage instead of absolute file path
+        String reportKey = "reports/" + month + "_bookings.pdf";
+        String reportUrl = s3StorageService.getFileUrl(reportKey);
 
         Map<String, Object> response = new HashMap<>();
-        response.put("reportPath", reportPath);
+        response.put("reportPath", reportUrl);
         response.put("message", bookingService.generateReport(month));
         return response;
     }
