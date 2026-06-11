@@ -47,6 +47,24 @@
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- blocker-4/5/6/7/8 (cz-java-0063, cz-java-0069): Spring Session backed by
+             Amazon ElastiCache for Redis — replaces in-memory HttpSession storage with
+             distributed session management for container scalability and persistence. -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!-- blocker-4/5/6/7/8/13: Redis client for Spring Session and distributed cache -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- health-check-endpoint: Spring Boot Actuator exposes /actuator/health endpoint
+             for container liveness/readiness probes in ECS/EKS deployments. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

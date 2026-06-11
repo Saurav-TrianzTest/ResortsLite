@@ -1,0 +1,42 @@
+{
+  "family": "resortsLite-task",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "resortsLite",
+      "image": "{{IMAGE_URI}}",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "SPRING_PROFILES_ACTIVE", "value": "docker" },
+        { "name": "SERVER_PORT",            "value": "8080" },
+        { "name": "TZ",                     "value": "UTC" },
+        { "name": "JAVA_OPTS",              "value": "-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Djava.security.egd=file:/dev/./urandom" },
+        { "name": "REDIS_HOST",             "value": "${REDIS_HOST}" },
+        { "name": "REDIS_PORT",             "value": "${REDIS_PORT:-6379}" },
+        { "name": "REDIS_PASSWORD",         "value": "${REDIS_PASSWORD}" },
+        { "name": "S3_REPORTS_BUCKET",      "value": "${S3_REPORTS_BUCKET:-resort-reports-bucket}" },
+        { "name": "S3_BACKUP_BUCKET",       "value": "${S3_BACKUP_BUCKET:-resort-backup-bucket}" },
+        { "name": "PAYMENT_API_ENDPOINT",   "value": "${PAYMENT_API_ENDPOINT:-http://payment-service/payments/charge}" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group":         "/ecs/resortsLite",
+          "awslogs-region":        "{{AWS_REGION}}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

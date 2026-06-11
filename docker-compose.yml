@@ -1,0 +1,50 @@
+version: "3.9"
+
+# =============================================================================
+# docker-compose.yml – ResortsLite application only
+# External services (Redis, databases, etc.) are provided separately.
+# =============================================================================
+
+services:
+  resortsLite:
+    image: resortsLite:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resortsLite-app
+    ports:
+      - "8080:8080"
+    environment:
+      # JVM settings
+      JAVA_OPTS: "-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Djava.security.egd=file:/dev/./urandom"
+      # Spring profile
+      SPRING_PROFILES_ACTIVE: docker
+      # Server
+      SERVER_PORT: "8080"
+      # Redis (external – supply real values at runtime)
+      REDIS_HOST: ${REDIS_HOST:-localhost}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      # S3 buckets
+      S3_REPORTS_BUCKET: ${S3_REPORTS_BUCKET:-resort-reports-bucket}
+      S3_BACKUP_BUCKET: ${S3_BACKUP_BUCKET:-resort-backup-bucket}
+      # Payment API
+      PAYMENT_API_ENDPOINT: ${PAYMENT_API_ENDPOINT:-http://payment-service/payments/charge}
+      # Timezone
+      TZ: UTC
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  app-network:
+    driver: bridge
