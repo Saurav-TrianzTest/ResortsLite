@@ -1,0 +1,59 @@
+version: "3.9"
+
+# =============================================================================
+# ResortsLite - Docker Compose (Application Only)
+# NOTE: External services (databases, message queues, etc.) are NOT included.
+#       Provide connection details via environment variables below.
+# =============================================================================
+
+services:
+  resortslite:
+    image: resortslite:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resortslite-app
+    ports:
+      - "8080:8080"
+    environment:
+      # JVM settings
+      JAVA_OPTS: "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Djava.security.egd=file:/dev/./urandom"
+      # Spring profile
+      SPRING_PROFILES_ACTIVE: docker
+      # Server
+      SERVER_PORT: "8080"
+      # Application paths
+      REPORT_BASE_PATH: /tmp/reports
+      BACKUP_PATH: /tmp/backups
+      # External service endpoints (override with real values)
+      PAYMENT_API_URL: ${PAYMENT_API_URL:-http://payment-service:9090/payments/charge}
+      APP_PAYMENT_ENDPOINT: ${APP_PAYMENT_ENDPOINT:-http://payment-svc.internal:9090/charge}
+      APP_INVENTORY_ENDPOINT: ${APP_INVENTORY_ENDPOINT:-http://inventory-svc.internal:8081/rooms}
+      APP_NOTIFICATION_ENDPOINT: ${APP_NOTIFICATION_ENDPOINT:-http://notify.internal:7070/send}
+      # Cache
+      CACHE_ENABLED: "false"
+      # Timezone
+      TZ: UTC
+    volumes:
+      - ./logs:/app/logs
+      - reports-data:/tmp/reports
+      - backups-data:/tmp/backups
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - app-network
+
+volumes:
+  reports-data:
+    driver: local
+  backups-data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

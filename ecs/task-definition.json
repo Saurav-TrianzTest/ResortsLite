@@ -1,0 +1,43 @@
+{
+  "family": "resortslite-task",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "resortslite",
+      "image": "{{IMAGE_URI}}",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "SPRING_PROFILES_ACTIVE", "value": "docker" },
+        { "name": "SERVER_PORT",            "value": "8080" },
+        { "name": "TZ",                     "value": "UTC" },
+        { "name": "JAVA_OPTS",              "value": "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UseG1GC -Djava.security.egd=file:/dev/./urandom" },
+        { "name": "REPORT_BASE_PATH",       "value": "/tmp/reports" },
+        { "name": "BACKUP_PATH",            "value": "/tmp/backups" },
+        { "name": "CACHE_ENABLED",          "value": "false" },
+        { "name": "PAYMENT_API_URL",        "value": "http://payment-service:9090/payments/charge" },
+        { "name": "APP_PAYMENT_ENDPOINT",   "value": "http://payment-svc.internal:9090/charge" },
+        { "name": "APP_INVENTORY_ENDPOINT", "value": "http://inventory-svc.internal:8081/rooms" },
+        { "name": "APP_NOTIFICATION_ENDPOINT", "value": "http://notify.internal:7070/send" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/resortslite",
+          "awslogs-region": "{{AWS_REGION}}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
