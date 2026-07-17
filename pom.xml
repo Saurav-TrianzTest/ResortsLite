@@ -47,6 +47,22 @@
             <artifactId>h2</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- blocker-4/5/6/7/8 (cz-java-0063/cz-java-0069): Spring Session with Redis backend
+             to replace in-memory HttpSession with distributed session storage on AKS -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- health-check-endpoint: Spring Boot Actuator provides /actuator/health endpoint
+             for container liveness and readiness probes on AKS -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

@@ -1,0 +1,38 @@
+version: "3.8"
+
+services:
+  resortslite:
+    image: resortslite:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resortslite-app
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SERVER_PORT=8080
+      - JAVA_OPTS=-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+      - REPORT_BASE_PATH=/reports
+      - BACKUP_PATH=/backups/nightly
+      # Redis session store (provide external Redis connection details)
+      - REDIS_HOST=${REDIS_HOST:-localhost}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # External service endpoints (override with actual service URLs)
+      - PAYMENT_API_URL=${PAYMENT_API_URL:-http://payment-service/payments/charge}
+      - TZ=UTC
+    volumes:
+      - reports-data:/reports
+      - backups-data:/backups/nightly
+    networks:
+      - app-network
+    restart: unless-stopped
+
+volumes:
+  reports-data:
+  backups-data:
+
+networks:
+  app-network:
+    driver: bridge
