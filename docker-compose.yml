@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  bookingcomp:
+    image: bookingcomp:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bookingcomp
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - TZ=UTC
+      - JAVA_OPTS=-Xms256m -Xmx512m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+      # Redis / ElastiCache configuration
+      - SPRING_REDIS_HOST=${SPRING_REDIS_HOST:-localhost}
+      - SPRING_REDIS_PORT=${SPRING_REDIS_PORT:-6379}
+      # External service endpoints
+      - PAYMENT_API_URL=${PAYMENT_API_URL:-http://payment-service/payments/charge}
+      - REPORT_SERVICE_URL=${REPORT_SERVICE_URL:-http://report-service/api/reports}
+      # S3 bucket names
+      - S3_REPORTS_BUCKET=${S3_REPORTS_BUCKET:-resorts-reports-bucket}
+      - S3_BACKUP_BUCKET=${S3_BACKUP_BUCKET:-resorts-backup-bucket}
+      # Server port
+      - SERVER_PORT=${SERVER_PORT:-8080}
+    volumes:
+      - ./config:/app/config
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bookingcomp
+  labels:
+    name: bookingcomp
+    app: bookingcomp
