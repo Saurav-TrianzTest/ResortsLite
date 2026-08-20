@@ -1,55 +1,141 @@
 package com.demo.resortslite;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
+import software.amazon.awssdk.services.ssm.SsmClient;
+import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
+import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * ReportService — cloud-ready service for report generation and retrieval.
+ *
+ * Cloud readiness fixes applied:
+ *  - cr-java-0061 (blockers 1, 2, 3): Hard-coded absolute file paths (/var/legacy/reports/,
+ *                  C:\ResortBackups\nightly\) removed. S3 bucket name and key prefix are
+ *                  injected from environment variables backed by AWS SSM Parameter Store.
+ *  - cr-java-0062 (blocker-4): Local file write operations replaced with Amazon S3
+ *                  PutObject calls for durable, scalable cloud storage.
+ *  - cr-java-0063 (blockers 5, 6, 7): java.io.File / FileWriter usage replaced with
+ *                  AWS SDK v2 S3Client for all persistent storage operations.
+ *  - cr-java-0071 (blocker-11): Hard-coded report download URL replaced with a
+ *                  pre-signed S3 URL generated at runtime via S3Presigner.
+ *  - cr-java-0077 (blocker-12): Hard-coded SERVER_PORT replaced with an environment
+ *                  variable injected from AWS SSM Parameter Store at runtime.
+ *  - cr-java-0111 (blocker-19): java.util.Date / SimpleDateFormat replaced with
+ *                  java.time API (Instant / ZonedDateTime) standardised on UTC.
+ */
 @Service
 public class ReportService {
 
-    // VIOLATION czr-java-001 [Software Portability / Mandatory]: Hardcoded absolute path.
-    // /var/legacy/reports does not exist in a Docker container image. Breaks containerisation.
-    // Must use volume mounts, cloud object storage (S3 / Azure Blob), or environment variable.
-    private static final String REPORT_BASE_PATH = "/var/legacy/reports/"; // czr-java-001
+    /**
+     * S3 bucket name for report storage.
+     * Set the environment variable REPORT_S3_BUCKET (populated from SSM Parameter Store
+     * /resortsLite/reports/s3Bucket) in your ECS task definition or Elastic Beanstalk
+     * environment.
+     *
+     * Fix for cr-java-0061 (blockers 1, 2, 3) — replaces REPORT_BASE_PATH and BACKUP_PATH.
+     */
+    @Value("${REPORT_S3_BUCKET:resortsLite-reports}")
+    private String reportS3Bucket;
 
-    // VIOLATION czr-java-001 [Software Portability / Mandatory]: Windows-style absolute path
-    // will fail on any Linux-based container or cloud host. Hard dependency on OS path structure.
-    private static final String BACKUP_PATH = "C:\\ResortBackups\\nightly\\"; // czr-java-001
+    /**
+     * S3 key prefix for report objects (replaces the hard-coded directory path).
+     * Fix for cr-java-0061 (blockers 1, 2, 3).
+     */
+    @Value("${REPORT_S3_PREFIX:reports/}")
+    private String reportS3Prefix;
 
-    // VIOLATION [Software Portability / High]: Fixed server port hardcoded in application logic.
-    // Container orchestration (ECS / EKS) dynamically assigns ports. Hardcoded ports prevent
-    // dynamic port binding required for modern container deployment and service discovery.
-    private static final int SERVER_PORT = 8080; // czr-port-001
+    /**
+     * AWS region for S3 and SSM calls.
+     * Defaults to us-east-1; override with the AWS_REGION environment variable.
+     */
+    @Value("${AWS_REGION:us-east-1}")
+    private String awsRegion;
 
+    /**
+     * Server port externalised from AWS SSM Parameter Store.
+     * Set the environment variable SERVER_PORT (populated from SSM
+     * /resortsLite/server/port) in your ECS task definition or Elastic Beanstalk
+     * environment.
+     *
+     * Fix for cr-java-0077 (blocker-12) — replaces hard-coded SERVER_PORT = 8080.
+     */
+    @Value("${SERVER_PORT:8080}")
+    private int serverPort;
+
+    /**
+     * Report download base URL externalised from AWS SSM Parameter Store.
+     * Set the environment variable REPORT_DOWNLOAD_BASE_URL (populated from SSM
+     * /resortsLite/reports/downloadBaseUrl) in your ECS task definition.
+     *
+     * Fix for cr-java-0071 (blocker-11) — replaces hard-coded HTTP URL.
+     */
+    @Value("${REPORT_DOWNLOAD_BASE_URL:${app.report.download.base.url:https://reports.resorts-internal.com/download}}")
+    private String reportDownloadBaseUrl;
+
+    /**
+     * Generate a monthly report and upload it to Amazon S3.
+     *
+     * Fix for cr-java-0061 (blockers 1, 2, 3): no absolute file paths used.
+     * Fix for cr-java-0062 (blocker-4): local FileWriter replaced with S3 PutObject.
+     * Fix for cr-java-0063 (blockers 5, 6, 7): java.io.File removed entirely.
+     *
+     * @param month the month identifier (e.g. "03")
+     * @param year  the year identifier (e.g. "2024")
+     * @return result map with S3 object key and upload status
+     */
     public Map<String, Object> generateMonthlyReport(String month, String year) {
         String fileName = "resort_report_" + month + "_" + year + ".csv";
-        String fullPath = REPORT_BASE_PATH + fileName; // czr-java-001
+        String s3Key = reportS3Prefix + fileName;
 
         Map<String, Object> result = new HashMap<>();
 
         try {
-            File reportDir = new File(REPORT_BASE_PATH); // czr-java-001
-            if (!reportDir.exists()) {
-                reportDir.mkdirs();
-            }
+            // Build CSV content in memory — no local file system dependency.
+            StringBuilder csvContent = new StringBuilder();
+            csvContent.append("BookingID,GuestName,RoomType,CheckIn,CheckOut,Amount\n");
+            csvContent.append("BK-001,John Smith,SUITE,2024-03-01,2024-03-05,1750.00\n");
+            csvContent.append("BK-002,Jane Doe,DELUXE,2024-03-03,2024-03-07,960.00\n");
 
-            FileWriter writer = new FileWriter(fullPath);
-            writer.write("BookingID,GuestName,RoomType,CheckIn,CheckOut,Amount\n");
-            writer.write("BK-001,John Smith,SUITE,2024-03-01,2024-03-05,1750.00\n");
-            writer.write("BK-002,Jane Doe,DELUXE,2024-03-03,2024-03-07,960.00\n");
-            writer.close();
+            byte[] contentBytes = csvContent.toString().getBytes(StandardCharsets.UTF_8);
+
+            // Upload to Amazon S3 — durable, scalable, cloud-native storage.
+            S3Client s3Client = S3Client.builder()
+                    .region(Region.of(awsRegion))
+                    .build();
+
+            PutObjectRequest putRequest = PutObjectRequest.builder()
+                    .bucket(reportS3Bucket)
+                    .key(s3Key)
+                    .contentType("text/csv")
+                    .build();
+
+            s3Client.putObject(putRequest, RequestBody.fromBytes(contentBytes));
+            s3Client.close();
 
             result.put("status", "generated");
-            result.put("path", fullPath);
-            result.put("serverPort", SERVER_PORT); // czr-port-001
+            result.put("s3Bucket", reportS3Bucket);
+            result.put("s3Key", s3Key);
+            result.put("serverPort", serverPort);
 
-        } catch (IOException e) {
+        } catch (Exception e) {
             result.put("status", "error");
             result.put("message", e.getMessage());
         }
@@ -57,22 +143,97 @@ public class ReportService {
         return result;
     }
 
-    // VIOLATION [Code Sustainability / Medium]: No JavaDoc or method documentation.
-    // Missing documentation is flagged across all public methods in the codebase.
-    // This increases onboarding time and transformation risk for automated tools.
-    public String buildReportDownloadUrl(String reportName) { // doc-missing-001
-        // VIOLATION cr-java-0088 [Cloud Compatibility / Mandatory]: Plain HTTP URL
-        // hardcoded for report download. Cloud security standards enforce HTTPS.
-        return "http://reports.resorts-internal.com:8080/download/" + reportName; // cr-java-0088
+    /**
+     * Build a pre-signed S3 download URL for the given report object.
+     *
+     * Fix for cr-java-0071 (blocker-11): replaces the hard-coded plain-HTTP URL
+     * "http://reports.resorts-internal.com:8080/download/{reportName}" with a
+     * time-limited pre-signed HTTPS URL generated directly from Amazon S3.
+     *
+     * @param reportName the S3 object key (or report file name) to generate a URL for
+     * @return a pre-signed HTTPS URL valid for 1 hour
+     */
+    public String buildReportDownloadUrl(String reportName) {
+        try {
+            S3Presigner presigner = S3Presigner.builder()
+                    .region(Region.of(awsRegion))
+                    .build();
+
+            GetObjectRequest getObjectRequest = GetObjectRequest.builder()
+                    .bucket(reportS3Bucket)
+                    .key(reportS3Prefix + reportName)
+                    .build();
+
+            GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+                    .signatureDuration(Duration.ofHours(1))
+                    .getObjectRequest(getObjectRequest)
+                    .build();
+
+            PresignedGetObjectRequest presignedRequest = presigner.presignGetObject(presignRequest);
+            String presignedUrl = presignedRequest.url().toString();
+            presigner.close();
+
+            return presignedUrl;
+        } catch (Exception e) {
+            // Fallback to configured base URL when S3 pre-signing is unavailable
+            // (e.g., local development without AWS credentials).
+            return reportDownloadBaseUrl + "/" + reportName;
+        }
     }
 
-    public Map<String, Object> getSystemInfo() { // doc-missing-001
-        String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+    /**
+     * Return system information using UTC timestamps.
+     *
+     * Fix for cr-java-0111 (blocker-19): java.util.Date / SimpleDateFormat replaced
+     * with java.time.Instant and ZonedDateTime standardised on UTC, eliminating
+     * server-local timezone dependencies in distributed cloud environments.
+     *
+     * Fix for cr-java-0061 (blockers 1, 2, 3): REPORT_BASE_PATH and BACKUP_PATH
+     * replaced with S3 bucket/prefix references.
+     *
+     * Fix for cr-java-0077 (blocker-12): SERVER_PORT replaced with injected value.
+     *
+     * @return system information map
+     */
+    public Map<String, Object> getSystemInfo() {
+        // UTC timestamp using java.time API — no server-local timezone dependency.
+        ZonedDateTime utcNow = Instant.now().atZone(ZoneOffset.UTC);
+        String timestamp = utcNow.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+
         Map<String, Object> info = new HashMap<>();
-        info.put("reportPath", REPORT_BASE_PATH);  // czr-java-001
-        info.put("backupPath", BACKUP_PATH);        // czr-java-001
-        info.put("serverPort", SERVER_PORT);        // czr-port-001
-        info.put("generatedAt", timestamp);
+        info.put("reportS3Bucket", reportS3Bucket);   // cr-java-0061 fixed
+        info.put("reportS3Prefix", reportS3Prefix);   // cr-java-0061 fixed
+        info.put("serverPort", serverPort);            // cr-java-0077 fixed
+        info.put("generatedAt", timestamp);            // cr-java-0111 fixed (UTC)
         return info;
+    }
+
+    /**
+     * Retrieve a configuration parameter from AWS SSM Parameter Store.
+     * Used to resolve environment-specific values at runtime without hard-coding.
+     *
+     * Fix for cr-java-0071 (blocker-11) and cr-java-0077 (blocker-12).
+     *
+     * @param parameterName the SSM parameter path (e.g. /resortsLite/server/port)
+     * @return the parameter value, or an empty string if retrieval fails
+     */
+    public String getSsmParameter(String parameterName) {
+        try {
+            SsmClient ssmClient = SsmClient.builder()
+                    .region(Region.of(awsRegion))
+                    .build();
+
+            GetParameterRequest paramRequest = GetParameterRequest.builder()
+                    .name(parameterName)
+                    .withDecryption(true)
+                    .build();
+
+            GetParameterResponse paramResponse = ssmClient.getParameter(paramRequest);
+            String value = paramResponse.parameter().value();
+            ssmClient.close();
+            return value;
+        } catch (Exception e) {
+            return "";
+        }
     }
 }
