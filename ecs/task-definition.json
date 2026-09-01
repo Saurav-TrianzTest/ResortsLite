@@ -1,0 +1,48 @@
+{
+  "family": "resortslite-task",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::{{ACCOUNT_ID}}:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "resortslite",
+      "image": "{{IMAGE_URI}}",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "SPRING_PROFILES_ACTIVE",                        "value": "docker" },
+        { "name": "SERVER_PORT",                                    "value": "8080" },
+        { "name": "SERVER_SHUTDOWN",                                "value": "graceful" },
+        { "name": "TZ",                                             "value": "UTC" },
+        { "name": "JAVA_OPTS",                                      "value": "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UnlockExperimentalVMOptions -Djava.security.egd=file:/dev/./urandom -Dfile.encoding=UTF-8 -Duser.timezone=UTC" },
+        { "name": "MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE",     "value": "health,info" },
+        { "name": "MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS",       "value": "always" },
+        { "name": "PAYMENT_SERVICE_URL",                           "value": "http://payment-service:9090" },
+        { "name": "INVENTORY_SERVICE_URL",                         "value": "http://inventory-service:8081" },
+        { "name": "MEMCACHED_ENDPOINT",                            "value": "localhost:11211" }
+      ],
+      "secrets": [
+        {
+          "name": "JWT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:{{AWS_REGION}}:{{ACCOUNT_ID}}:secret:resortslite/jwt-secret"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/resortslite",
+          "awslogs-region": "{{AWS_REGION}}",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

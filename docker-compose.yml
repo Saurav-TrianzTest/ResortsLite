@@ -1,0 +1,60 @@
+version: "3.9"
+
+# =============================================================================
+# docker-compose.yml — ResortsLite Spring Boot Application
+# Application service ONLY — external services (DB, cache, etc.) are provided
+# separately via environment variables.
+# =============================================================================
+
+services:
+  resortslite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: resortslite:latest
+    container_name: resortslite-app
+    ports:
+      - "8080:8080"
+    environment:
+      # Spring profile
+      SPRING_PROFILES_ACTIVE: docker
+
+      # JVM options
+      JAVA_OPTS: "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -XX:+UnlockExperimentalVMOptions -Djava.security.egd=file:/dev/./urandom -Dfile.encoding=UTF-8 -Duser.timezone=UTC"
+
+      # Application settings
+      SERVER_PORT: "8080"
+      SERVER_SHUTDOWN: graceful
+      TZ: UTC
+
+      # JWT secret — override with a strong secret in production
+      JWT_SECRET: "change-me-in-production"
+
+      # Inter-service URLs (override with actual endpoints in production)
+      PAYMENT_SERVICE_URL: "http://payment-service:9090"
+      INVENTORY_SERVICE_URL: "http://inventory-service:8081"
+      MEMCACHED_ENDPOINT: "localhost:11211"
+
+      # Spring Actuator
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    restart: unless-stopped
+
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
