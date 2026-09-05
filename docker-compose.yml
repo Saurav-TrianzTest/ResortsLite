@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  resortsLite:
+    image: resortsLite:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resortsLite-app
+    ports:
+      - "8080:8080"
+    environment:
+      # JVM settings
+      JAVA_OPTS: "-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
+      SPRING_PROFILES_ACTIVE: "docker"
+      TZ: "UTC"
+
+      # JWT secret (override in production via secrets manager)
+      JWT_SECRET: "${JWT_SECRET:-changeme-override-in-production}"
+
+      # Memcached / ElastiCache endpoint
+      MEMCACHED_ENDPOINT: "${MEMCACHED_ENDPOINT:-localhost:11211}"
+      CACHE_TTL_SECONDS: "${CACHE_TTL_SECONDS:-3600}"
+
+      # Inter-service endpoints (ECS Service Connect DNS names in production)
+      PAYMENT_SERVICE_ENDPOINT: "${PAYMENT_SERVICE_ENDPOINT:-http://payment-service:9090}"
+      INVENTORY_SERVICE_ENDPOINT: "${INVENTORY_SERVICE_ENDPOINT:-http://inventory-service:8081}"
+
+      # Database host (ECS Service Connect DNS name in production)
+      DB_HOST: "${DB_HOST:-db-service}"
+
+      # EFS-backed report/backup paths
+      APP_REPORT_BASE_PATH: "${APP_REPORT_BASE_PATH:-/mnt/efs/reports}"
+      APP_BACKUP_PATH: "${APP_BACKUP_PATH:-/mnt/efs/backups}"
+
+      # ALB stickiness (transitional strategy)
+      ALB_STICKINESS_ENABLED: "${ALB_STICKINESS_ENABLED:-true}"
+      ALB_STICKINESS_DURATION_SECONDS: "${ALB_STICKINESS_DURATION_SECONDS:-86400}"
+
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    restart: unless-stopped
+
+networks:
+  default:
+    name: resortsLite-network
+    driver: bridge

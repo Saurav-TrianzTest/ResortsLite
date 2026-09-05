@@ -1,0 +1,57 @@
+# ── Compiled output ──────────────────────────────────────────
+target/
+build/
+out/
+
+# ── Maven wrapper (never needed inside Docker) ────────────────
+mvnw
+mvnw.cmd
+.mvn/
+
+# ── Gradle wrapper (never needed inside Docker) ───────────────
+gradlew
+gradlew.bat
+gradle/wrapper/
+
+# ── Version control ───────────────────────────────────────────
+.git/
+.gitignore
+.gitattributes
+
+# ── IDE / editor artefacts ────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.classpath
+.project
+.settings/
+*.swp
+*.swo
+
+# ── OS artefacts ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Documentation ─────────────────────────────────────────────
+*.md
+docs/
+
+# ── Test reports ──────────────────────────────────────────────
+**/surefire-reports/
+**/failsafe-reports/
+
+# ── Local environment overrides ───────────────────────────────
+.env
+.env.*
+*.local
+
+# ── Docker artefacts (avoid recursive copy) ───────────────────
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# ── Logs ──────────────────────────────────────────────────────
+logs/
+*.log

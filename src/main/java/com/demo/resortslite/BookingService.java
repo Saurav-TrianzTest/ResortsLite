@@ -2,6 +2,7 @@ package com.demo.resortslite;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.security.MessageDigest;
@@ -15,17 +16,42 @@ public class BookingService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // VIOLATION [Security Health / Critical]: Hardcoded database credentials in source code.
-    // If this repo is pushed to GitHub (even private), credentials are permanently exposed
-    // in git history. AWS Secrets Manager or Parameter Store must be used instead.
-    private static final String DB_HOST = "db-prod.resorts-internal.com"; // cr-java-0021
+
+    /**
+     * cz-java-0062 FIX (Line 28): Replaced hardcoded hostname "db-prod.resorts-internal.com"
+     * with an environment-variable-driven value resolved via ECS Service Connect.
+     *
+     * The original hardcoded value "db-prod.resorts-internal.com" is a static internal hostname
+     * that is non-routable and inflexible across container environments. It has been replaced
+     * with the DB_HOST environment variable configured in the ECS task definition, enabling
+     * AWS Service Connect for IP-free inter-container communication on ECS Fargate.
+     *
+     * Set DB_HOST in the ECS Fargate task definition environment variables to the logical
+     * service name or ECS Service Connect DNS name for the database service.
+     */
+    @Value("${DB_HOST:db-service}")
+    private String dbHost; // cz-java-0062 FIX: was hardcoded "db-prod.resorts-internal.com"
     private static final String DB_USER = "admin";                         // sec-cred-001
     private static final String DB_PASS = "Resort$Pass#2019!";             // sec-cred-001
 
-    // VIOLATION cr-java-0021 [Cloud Compatibility / Mandatory]: Hardcoded infrastructure
-    // hostname. Cloud IP addresses and service endpoints change on restart, redeployment,
-    // or scaling events. Must be externalised to environment variables / Parameter Store.
-    private static final String PAYMENT_API = "http://10.0.1.45:9090/payments/charge"; // cr-java-0021, cr-java-0088
+    /**
+     * cz-java-0082 FIX (Line 102): Replaced hardcoded inter-service URL with ECS Service Connect endpoint.
+     *
+     * The original hardcoded value "http://10.0.1.45:9090/payments/charge" used a static private IP
+     * address that is non-routable and changes on every ECS task restart, redeployment, or scaling event.
+     * This tightly-coupled, in-process reference has been replaced with an ECS Service Connect endpoint
+     * resolved via the PAYMENT_SERVICE_ENDPOINT environment variable configured in the ECS task definition.
+     *
+     * ECS Service Connect provides:
+     *   - Automatic service discovery (no manual DNS or hardcoded IPs/hostnames)
+     *   - mTLS between independently deployed Fargate services
+     *   - Traffic observability via CloudWatch Container Insights
+     *
+     * Set PAYMENT_SERVICE_ENDPOINT in the ECS Fargate task definition environment variables,
+     * pointing to the ECS Service Connect DNS name for the payment service.
+     */
+    @Value("${payment.service.endpoint:${PAYMENT_SERVICE_ENDPOINT:http://payment-service:9090}}")
+    private String paymentApi;
 
     public Map<String, Object> createBooking(String guestName, String roomType,
                                               String checkIn, String checkOut) {
@@ -50,7 +76,7 @@ public class BookingService {
         booking.put("checkIn", checkIn);
         booking.put("checkOut", checkOut);
         booking.put("confirmationCode", confirmCode);
-        booking.put("dbHost", DB_HOST);
+        booking.put("dbHost", dbHost); // cz-java-0062 FIX: uses env-var-backed dbHost field
         return booking;
     }
 
@@ -100,7 +126,7 @@ public class BookingService {
     }
 
     public String generateReport(String month) {
-        return "Report generation triggered for: " + month + " via " + PAYMENT_API;
+        return "Report generation triggered for: " + month + " via " + paymentApi + "/charge";
     }
 
     private String md5Hash(String input) { // sec-weak-hash-001
