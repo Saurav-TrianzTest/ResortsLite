@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  resortslite:
+    image: resortslite:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: resortslite-app
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SERVER_PORT=8080
+      - REDIS_HOST=${REDIS_HOST:-localhost}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REPORT_BASE_PATH=${REPORT_BASE_PATH:-/var/reports}
+      - BACKUP_PATH=${BACKUP_PATH:-/var/backups}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-3600}
+      - PAYMENT_API_URL=${PAYMENT_API_URL:-http://payment-svc.payments.svc.cluster.local:9090/payments/charge}
+      - JAVA_OPTS=-Xmx512m -Xms256m -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+    volumes:
+      - reports-data:/var/reports
+      - backups-data:/var/backups
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  reports-data:
+    driver: local
+  backups-data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
