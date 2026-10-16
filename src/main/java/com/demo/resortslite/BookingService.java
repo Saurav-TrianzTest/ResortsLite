@@ -4,6 +4,25 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
+import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
+
+// cr-java-0090 remediation: Amazon Cognito imports for cloud-native user identity management.
+// Cognito replaces any file-based or hardcoded credential storage for user authentication.
+import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminGetUserRequest;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminGetUserResponse;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminInitiateAuthRequest;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AdminInitiateAuthResponse;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.AuthFlowType;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.NotAuthorizedException;
+import software.amazon.awssdk.services.cognitoidentityprovider.model.UserNotFoundException;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
@@ -15,17 +34,179 @@ public class BookingService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // VIOLATION [Security Health / Critical]: Hardcoded database credentials in source code.
-    // If this repo is pushed to GitHub (even private), credentials are permanently exposed
-    // in git history. AWS Secrets Manager or Parameter Store must be used instead.
     private static final String DB_HOST = "db-prod.resorts-internal.com"; // cr-java-0021
-    private static final String DB_USER = "admin";                         // sec-cred-001
-    private static final String DB_PASS = "Resort$Pass#2019!";             // sec-cred-001
+
+    // AWS Secrets Manager secret name for database credentials (cr-java-0069 remediation).
+    // The secret name is read from the environment variable DB_SECRET_NAME so it can be
+    // configured per environment without code changes (12-factor app principle III).
+    private static final String DB_SECRET_NAME =
+            System.getenv("DB_SECRET_NAME") != null
+                    ? System.getenv("DB_SECRET_NAME")
+                    : "resortslite/db/credentials";
+
+    // AWS region is read from the environment variable AWS_REGION (standard AWS convention).
+    private static final String AWS_REGION =
+            System.getenv("AWS_REGION") != null
+                    ? System.getenv("AWS_REGION")
+                    : "us-east-1";
+
+    // cr-java-0090 remediation: Amazon Cognito User Pool configuration.
+    // These values are read from environment variables so they can be configured per
+    // environment without code changes (12-factor app principle III).
+    // Set COGNITO_USER_POOL_ID and COGNITO_APP_CLIENT_ID in your ECS task definition,
+    // EKS pod spec, or Elastic Beanstalk environment properties.
+    private static final String COGNITO_USER_POOL_ID =
+            System.getenv("COGNITO_USER_POOL_ID") != null
+                    ? System.getenv("COGNITO_USER_POOL_ID")
+                    : "us-east-1_defaultPoolId";
+
+    private static final String COGNITO_APP_CLIENT_ID =
+            System.getenv("COGNITO_APP_CLIENT_ID") != null
+                    ? System.getenv("COGNITO_APP_CLIENT_ID")
+                    : "defaultAppClientId";
 
     // VIOLATION cr-java-0021 [Cloud Compatibility / Mandatory]: Hardcoded infrastructure
     // hostname. Cloud IP addresses and service endpoints change on restart, redeployment,
     // or scaling events. Must be externalised to environment variables / Parameter Store.
     private static final String PAYMENT_API = "http://10.0.1.45:9090/payments/charge"; // cr-java-0021, cr-java-0088
+
+    /**
+     * Retrieves database credentials from AWS Secrets Manager.
+     * The secret is expected to be stored as a JSON string with keys "username" and "password".
+     * Example secret value: {"username":"admin","password":"Resort$Pass#2019!"}
+     *
+     * @return a Map containing "username" and "password" keys
+     */
+    private Map<String, String> getDbCredentialsFromSecretsManager() {
+        Map<String, String> credentials = new HashMap<>();
+        try {
+            SecretsManagerClient client = SecretsManagerClient.builder()
+                    .region(Region.of(AWS_REGION))
+                    .build();
+
+            GetSecretValueRequest request = GetSecretValueRequest.builder()
+                    .secretId(DB_SECRET_NAME)
+                    .build();
+
+            GetSecretValueResponse response = client.getSecretValue(request);
+            String secretString = response.secretString();
+
+            // Parse the JSON secret value to extract username and password
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode secretJson = mapper.readTree(secretString);
+            credentials.put("username", secretJson.get("username").asText());
+            credentials.put("password", secretJson.get("password").asText());
+
+            client.close();
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to retrieve database credentials from AWS Secrets Manager (secret: "
+                            + DB_SECRET_NAME + "): " + e.getMessage(), e);
+        }
+        return credentials;
+    }
+
+    /**
+     * cr-java-0090 remediation: Authenticates a user via Amazon Cognito User Pool.
+     *
+     * <p>Replaces any file-based or hardcoded credential storage for user authentication.
+     * Credentials are never stored locally — authentication is delegated entirely to
+     * Amazon Cognito, which provides centralized, encrypted, and auditable identity
+     * management with built-in user lifecycle management.</p>
+     *
+     * <p>The Cognito User Pool ID and App Client ID are read from environment variables
+     * (COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID) so they can be configured per
+     * environment without code changes.</p>
+     *
+     * @param username the Cognito username (typically an email address)
+     * @param password the user's password (never stored locally)
+     * @return a Map containing the Cognito authentication tokens (IdToken, AccessToken, RefreshToken)
+     * @throws RuntimeException if authentication fails or Cognito is unreachable
+     */
+    public Map<String, String> authenticateUser(String username, String password) {
+        Map<String, String> authTokens = new HashMap<>();
+        try {
+            CognitoIdentityProviderClient cognitoClient = CognitoIdentityProviderClient.builder()
+                    .region(Region.of(AWS_REGION))
+                    .build();
+
+            // Build the auth parameters for ADMIN_USER_PASSWORD_AUTH flow.
+            // This flow requires the Cognito User Pool to have ALLOW_ADMIN_USER_PASSWORD_AUTH enabled.
+            Map<String, String> authParams = new HashMap<>();
+            authParams.put("USERNAME", username);
+            authParams.put("PASSWORD", password);
+
+            AdminInitiateAuthRequest authRequest = AdminInitiateAuthRequest.builder()
+                    .authFlow(AuthFlowType.ADMIN_USER_PASSWORD_AUTH)
+                    .clientId(COGNITO_APP_CLIENT_ID)
+                    .userPoolId(COGNITO_USER_POOL_ID)
+                    .authParameters(authParams)
+                    .build();
+
+            AdminInitiateAuthResponse authResponse = cognitoClient.adminInitiateAuth(authRequest);
+
+            // Extract tokens from the Cognito authentication result.
+            // These tokens are returned to the caller and must NOT be stored in local files.
+            authTokens.put("idToken", authResponse.authenticationResult().idToken());
+            authTokens.put("accessToken", authResponse.authenticationResult().accessToken());
+            authTokens.put("refreshToken", authResponse.authenticationResult().refreshToken());
+            authTokens.put("tokenType", authResponse.authenticationResult().tokenType());
+
+            cognitoClient.close();
+        } catch (NotAuthorizedException e) {
+            throw new RuntimeException(
+                    "Authentication failed for user '" + username + "': Invalid credentials.", e);
+        } catch (UserNotFoundException e) {
+            throw new RuntimeException(
+                    "Authentication failed: User '" + username + "' not found in Cognito User Pool.", e);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to authenticate via Amazon Cognito (UserPool: "
+                            + COGNITO_USER_POOL_ID + "): " + e.getMessage(), e);
+        }
+        return authTokens;
+    }
+
+    /**
+     * cr-java-0090 remediation: Retrieves user profile data from Amazon Cognito User Pool.
+     *
+     * <p>User data is managed centrally in Cognito rather than in local files,
+     * enabling consistent user lifecycle management across all application instances.</p>
+     *
+     * @param username the Cognito username to look up
+     * @return a Map containing the user's Cognito attributes
+     */
+    public Map<String, String> getUserFromCognito(String username) {
+        Map<String, String> userAttributes = new HashMap<>();
+        try {
+            CognitoIdentityProviderClient cognitoClient = CognitoIdentityProviderClient.builder()
+                    .region(Region.of(AWS_REGION))
+                    .build();
+
+            AdminGetUserRequest getUserRequest = AdminGetUserRequest.builder()
+                    .userPoolId(COGNITO_USER_POOL_ID)
+                    .username(username)
+                    .build();
+
+            AdminGetUserResponse getUserResponse = cognitoClient.adminGetUser(getUserRequest);
+
+            // Map Cognito user attributes to a simple key-value structure
+            getUserResponse.userAttributes().forEach(attr ->
+                    userAttributes.put(attr.name(), attr.value()));
+            userAttributes.put("userStatus", getUserResponse.userStatusAsString());
+
+            cognitoClient.close();
+        } catch (UserNotFoundException e) {
+            throw new RuntimeException(
+                    "User '" + username + "' not found in Cognito User Pool: "
+                            + COGNITO_USER_POOL_ID, e);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Failed to retrieve user from Amazon Cognito (UserPool: "
+                            + COGNITO_USER_POOL_ID + "): " + e.getMessage(), e);
+        }
+        return userAttributes;
+    }
 
     public Map<String, Object> createBooking(String guestName, String roomType,
                                               String checkIn, String checkOut) {

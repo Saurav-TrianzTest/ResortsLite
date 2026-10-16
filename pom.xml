@@ -19,12 +19,51 @@
 
     <properties>
         <java.version>1.8</java.version>
+        <aws.sdk.version>2.25.40</aws.sdk.version>
     </properties>
 
     <dependencies>
+        <!-- AWS SDK v2 BOM for S3 integration (cr-java-0061 remediation) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>secretsmanager</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        <!-- AWS SSM SDK v2 for Parameter Store integration (cr-java-0071 remediation) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>ssm</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
+        <!-- cr-java-0090 remediation: Amazon Cognito Identity Provider SDK for cloud-native
+             user identity management. Replaces file-based authentication credential storage
+             with centralized, encrypted, and auditable Cognito User Pool authentication. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>cognitoidentityprovider</artifactId>
+            <version>${aws.sdk.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- cr-java-0065 remediation: Spring Session backed by Amazon ElastiCache for Redis.
+             Replaces in-process HttpSession storage with a distributed Redis session store,
+             enabling stateless application instances and horizontal scaling behind AWS ALB. -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!-- Spring Boot Redis starter — provides Lettuce client and auto-configuration
+             for the RedisConnectionFactory used by Spring Session (cr-java-0065). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
