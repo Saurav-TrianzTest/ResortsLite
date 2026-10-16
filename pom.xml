@@ -30,6 +30,25 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+        <!-- Health check endpoint via /actuator/health (health-check-endpoint) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- cz-java-0063: Spring Session backed by Amazon ElastiCache (Redis).
+             Replaces in-memory HttpSession with a Redis-backed session store so
+             that session data is shared across all EKS pod replicas and survives
+             container restarts. -->
+        <dependency>
+            <groupId>org.springframework.session</groupId>
+            <artifactId>spring-session-data-redis</artifactId>
+        </dependency>
+        <!-- cz-java-0063: Spring Data Redis + Lettuce client required by
+             spring-session-data-redis to connect to Amazon ElastiCache. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
         <!-- SECURITY VIOLATION: log4j 2.14.1 has critical CVE-2021-44228 (Log4Shell) -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
