@@ -2,7 +2,16 @@ package com.demo.resortslite;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
+import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.security.MessageDigest;
 import java.util.HashMap;
@@ -15,12 +24,58 @@ public class BookingService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // VIOLATION [Security Health / Critical]: Hardcoded database credentials in source code.
-    // If this repo is pushed to GitHub (even private), credentials are permanently exposed
-    // in git history. AWS Secrets Manager or Parameter Store must be used instead.
-    private static final String DB_HOST = "db-prod.resorts-internal.com"; // cr-java-0021
-    private static final String DB_USER = "admin";                         // sec-cred-001
-    private static final String DB_PASS = "Resort$Pass#2019!";             // sec-cred-001
+    // cr-java-0069 FIX: DB_HOST externalised to environment variable / Parameter Store.
+    // Hard-coded hostname removed; resolved at runtime from the environment.
+    private static final String DB_HOST = System.getenv().getOrDefault(
+            "DB_HOST", "localhost");
+
+    // cr-java-0069 FIX: DB_USER and DB_PASS are no longer hard-coded in source.
+    // Credentials are fetched at class-load time from AWS Secrets Manager so that
+    // they never appear in version control, container images, or log output.
+    private static final String DB_USER;
+    private static final String DB_PASS;
+
+    static {
+        String user = "admin";   // safe fallback for local / non-AWS environments
+        String pass = "";
+
+        String secretName = System.getenv("DB_SECRET_NAME");
+        String awsRegion  = System.getenv().getOrDefault("AWS_REGION", "us-east-1");
+
+        if (secretName != null && !secretName.isEmpty()) {
+            try (SecretsManagerClient client = SecretsManagerClient.builder()
+                    .region(Region.of(awsRegion))
+                    .build()) {
+
+                GetSecretValueRequest request = GetSecretValueRequest.builder()
+                        .secretId(secretName)
+                        .build();
+
+                GetSecretValueResponse response = client.getSecretValue(request);
+                String secretJson = response.secretString();
+
+                // AWS Secrets Manager stores DB credentials as JSON:
+                // { "username": "...", "password": "..." }
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode node = mapper.readTree(secretJson);
+                if (node.has("username")) {
+                    user = node.get("username").asText();
+                }
+                if (node.has("password")) {
+                    pass = node.get("password").asText();
+                }
+            } catch (Exception e) {
+                // Log warning but allow startup to continue so local/test
+                // environments without Secrets Manager still work.
+                System.err.println("[BookingService] WARNING: Could not retrieve DB "
+                        + "credentials from AWS Secrets Manager (secret=" + secretName
+                        + "). Using fallback values. Error: " + e.getMessage());
+            }
+        }
+
+        DB_USER = user;
+        DB_PASS = pass;
+    }
 
     // VIOLATION cr-java-0021 [Cloud Compatibility / Mandatory]: Hardcoded infrastructure
     // hostname. Cloud IP addresses and service endpoints change on restart, redeployment,
