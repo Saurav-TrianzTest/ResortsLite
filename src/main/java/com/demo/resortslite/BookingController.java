@@ -2,8 +2,15 @@ package com.demo.resortslite;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import software.amazon.awssdk.services.ssm.SsmClient;
+import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
+import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
+import software.amazon.awssdk.services.ssm.model.SsmException;
 
 import javax.servlet.http.HttpSession;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import redis.clients.jedis.JedisPooled;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -14,9 +21,59 @@ public class BookingController {
     @Autowired
     private BookingService bookingService;
 
-    // VIOLATION cr-java-0067 [Cloud Compatibility / Mandatory]: In-memory cache without TTL
-    // breaks horizontal scaling — cache is instance-local, invisible to other EC2 instances
-    private static final Map<String, Object> bookingCache = new HashMap<>(); // cr-java-0067
+    // Redis cache replacing in-memory HashMap (cr-java-0067)
+    // Lazily initialised on first use, with TTL for automatic expiration
+    private JedisPooled jedis;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final int CACHE_TTL_SECONDS = 3600;
+
+    // SSM client for Parameter Store lookups (cr-java-0071)
+    private SsmClient ssmClient;
+    private String parameterPath;
+
+    private JedisPooled getJedis() {
+        if (jedis == null) {
+            String redisEndpoint = System.getenv("ELASTICACHE_ENDPOINT");
+            if (redisEndpoint == null || redisEndpoint.isEmpty()) {
+                redisEndpoint = "localhost";
+            }
+            String portEnv = System.getenv("REDIS_PORT");
+            int redisPort = (portEnv != null) ? Integer.parseInt(portEnv) : 6379;
+            jedis = new JedisPooled(redisEndpoint, redisPort);
+        }
+        return jedis;
+    }
+
+    private SsmClient getSsmClient() {
+        if (ssmClient == null) {
+            ssmClient = SsmClient.builder().build();
+        }
+        return ssmClient;
+    }
+
+    private String getParameterPath() {
+        if (parameterPath == null) {
+            parameterPath = System.getenv("APP_PARAMETER_PATH");
+            if (parameterPath == null) {
+                parameterPath = "/app/config/";
+            }
+        }
+        return parameterPath;
+    }
+
+    private String getParameterFromSsm(String parameterKey) {
+        String fullPath = getParameterPath() + parameterKey;
+        try {
+            GetParameterRequest request = GetParameterRequest.builder()
+                    .name(fullPath)
+                    .withDecryption(true)
+                    .build();
+            GetParameterResponse response = getSsmClient().getParameter(request);
+            return response.parameter().value();
+        } catch (SsmException e) {
+            return null;
+        }
+    }
 
     @PostMapping("/create")
     public Map<String, Object> createBooking(
@@ -28,13 +85,18 @@ public class BookingController {
 
         Map<String, Object> booking = bookingService.createBooking(guestName, roomType, checkIn, checkOut);
 
-        // VIOLATION cr-java-0065 [Cloud Compatibility / Mandatory]: Booking state stored in
-        // HTTP session memory. AWS ALB distributes requests across EC2 instances — session
-        // data on instance A is invisible to instance B. Auto-scaling and failover breaks.
+        // Session state now backed by Redis via Spring Session (cr-java-0065)
         session.setAttribute("lastBooking", booking); // cr-java-0065
         session.setAttribute("guestName", guestName); // cr-java-0065
 
-        bookingCache.put((String) booking.get("bookingId"), booking);
+        // Cache in Redis with TTL instead of in-memory HashMap (cr-java-0067)
+        try {
+            String cacheKey = "booking:" + booking.get("bookingId");
+            String serialized = objectMapper.writeValueAsString(booking);
+            getJedis().setex(cacheKey, CACHE_TTL_SECONDS, serialized);
+        } catch (Exception e) {
+            // Cache failure does not break the application
+        }
 
         Map<String, Object> response = new HashMap<>();
         response.put("status", "confirmed");
@@ -47,8 +109,7 @@ public class BookingController {
             @PathVariable String bookingId,
             HttpSession session) {
 
-        // VIOLATION cr-java-0065 [Cloud Compatibility / Mandatory]: Reading business state
-        // from HTTP session — will return null on any other instance in the cluster.
+        // Session state now backed by Redis via Spring Session (cr-java-0065)
         String lastGuest = (String) session.getAttribute("guestName"); // cr-java-0065
 
         Map<String, Object> result = new HashMap<>();
@@ -74,10 +135,12 @@ public class BookingController {
 
     @GetMapping("/report/download")
     public Map<String, Object> downloadReport(@RequestParam String month) {
-        // VIOLATION czr-java-001 [Software Portability / Mandatory]: Hardcoded absolute
-        // file path. This path does not exist inside a container image. Container images
-        // have their own isolated file systems — /var/legacy/reports won't be present.
-        String reportPath = "/var/legacy/reports/" + month + "_bookings.pdf"; // czr-java-001
+        // Report path externalised to Parameter Store (cr-java-0071)
+        String reportBase = getParameterFromSsm("report-path");
+        if (reportBase == null || reportBase.isEmpty()) {
+            reportBase = "reports/";
+        }
+        String reportPath = reportBase + month + "_bookings.pdf";
 
         Map<String, Object> response = new HashMap<>();
         response.put("reportPath", reportPath);

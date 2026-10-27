@@ -1,55 +1,112 @@
 package com.demo.resortslite;
 
 import org.springframework.stereotype.Service;
+import software.amazon.awssdk.core.exception.SdkException;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.ssm.SsmClient;
+import software.amazon.awssdk.services.ssm.model.GetParameterRequest;
+import software.amazon.awssdk.services.ssm.model.GetParameterResponse;
+import software.amazon.awssdk.services.ssm.model.SsmException;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 
 @Service
 public class ReportService {
 
-    // VIOLATION czr-java-001 [Software Portability / Mandatory]: Hardcoded absolute path.
-    // /var/legacy/reports does not exist in a Docker container image. Breaks containerisation.
-    // Must use volume mounts, cloud object storage (S3 / Azure Blob), or environment variable.
-    private static final String REPORT_BASE_PATH = "/var/legacy/reports/"; // czr-java-001
+    // S3 bucket name from environment variable (cr-java-0061, cr-java-0062, cr-java-0063)
+    private String s3BucketName;
 
-    // VIOLATION czr-java-001 [Software Portability / Mandatory]: Windows-style absolute path
-    // will fail on any Linux-based container or cloud host. Hard dependency on OS path structure.
-    private static final String BACKUP_PATH = "C:\\ResortBackups\\nightly\\"; // czr-java-001
+    // S3 client, lazily initialised on first use (cr-java-0061, cr-java-0062, cr-java-0063)
+    private S3Client s3Client;
 
-    // VIOLATION [Software Portability / High]: Fixed server port hardcoded in application logic.
-    // Container orchestration (ECS / EKS) dynamically assigns ports. Hardcoded ports prevent
-    // dynamic port binding required for modern container deployment and service discovery.
-    private static final int SERVER_PORT = 8080; // czr-port-001
+    // SSM client for Parameter Store lookups (cr-java-0071)
+    private SsmClient ssmClient;
+
+    // Parameter Store base path for environment configuration (cr-java-0071)
+    private String parameterPath;
+
+    // Server port from environment variable (cr-java-0077)
+    private static final int SERVER_PORT;
+    static {
+        String portEnv = System.getenv("PORT");
+        SERVER_PORT = (portEnv != null) ? Integer.parseInt(portEnv) : 8080;
+    }
+
+    private S3Client getS3Client() {
+        if (s3Client == null) {
+            s3Client = S3Client.builder().build();
+        }
+        return s3Client;
+    }
+
+    private SsmClient getSsmClient() {
+        if (ssmClient == null) {
+            ssmClient = SsmClient.builder().build();
+        }
+        return ssmClient;
+    }
+
+    private String getS3BucketName() {
+        if (s3BucketName == null) {
+            s3BucketName = System.getenv("APP_S3_BUCKET");
+        }
+        return s3BucketName;
+    }
+
+    private String getParameterPath() {
+        if (parameterPath == null) {
+            parameterPath = System.getenv("APP_PARAMETER_PATH");
+            if (parameterPath == null) {
+                parameterPath = "/app/config/";
+            }
+        }
+        return parameterPath;
+    }
+
+    private String getParameterFromSsm(String parameterKey) {
+        String fullPath = getParameterPath() + parameterKey;
+        try {
+            GetParameterRequest request = GetParameterRequest.builder()
+                    .name(fullPath)
+                    .withDecryption(true)
+                    .build();
+            GetParameterResponse response = getSsmClient().getParameter(request);
+            return response.parameter().value();
+        } catch (SsmException e) {
+            return null;
+        }
+    }
 
     public Map<String, Object> generateMonthlyReport(String month, String year) {
         String fileName = "resort_report_" + month + "_" + year + ".csv";
-        String fullPath = REPORT_BASE_PATH + fileName; // czr-java-001
+        String s3Key = "reports/" + fileName;
 
         Map<String, Object> result = new HashMap<>();
 
         try {
-            File reportDir = new File(REPORT_BASE_PATH); // czr-java-001
-            if (!reportDir.exists()) {
-                reportDir.mkdirs();
-            }
+            String content = "BookingID,GuestName,RoomType,CheckIn,CheckOut,Amount\n"
+                    + "BK-001,John Smith,SUITE,2024-03-01,2024-03-05,1750.00\n"
+                    + "BK-002,Jane Doe,DELUXE,2024-03-03,2024-03-07,960.00\n";
 
-            FileWriter writer = new FileWriter(fullPath);
-            writer.write("BookingID,GuestName,RoomType,CheckIn,CheckOut,Amount\n");
-            writer.write("BK-001,John Smith,SUITE,2024-03-01,2024-03-05,1750.00\n");
-            writer.write("BK-002,Jane Doe,DELUXE,2024-03-03,2024-03-07,960.00\n");
-            writer.close();
+            PutObjectRequest putRequest = PutObjectRequest.builder()
+                    .bucket(getS3BucketName())
+                    .key(s3Key)
+                    .contentType("text/csv")
+                    .build();
+
+            getS3Client().putObject(putRequest, RequestBody.fromString(content));
 
             result.put("status", "generated");
-            result.put("path", fullPath);
-            result.put("serverPort", SERVER_PORT); // czr-port-001
+            result.put("path", s3Key);
+            result.put("serverPort", SERVER_PORT);
 
-        } catch (IOException e) {
+        } catch (SdkException e) {
             result.put("status", "error");
             result.put("message", e.getMessage());
         }
@@ -63,15 +120,20 @@ public class ReportService {
     public String buildReportDownloadUrl(String reportName) { // doc-missing-001
         // VIOLATION cr-java-0088 [Cloud Compatibility / Mandatory]: Plain HTTP URL
         // hardcoded for report download. Cloud security standards enforce HTTPS.
-        return "http://reports.resorts-internal.com:8080/download/" + reportName; // cr-java-0088
+        String baseUrl = getParameterFromSsm("report-download-url");
+        if (baseUrl == null || baseUrl.isEmpty()) {
+            baseUrl = "https://reports.resorts-internal.com/download/";
+        }
+        return baseUrl + reportName;
     }
 
     public Map<String, Object> getSystemInfo() { // doc-missing-001
-        String timestamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
+        String timestamp = Instant.now().atZone(ZoneOffset.UTC)
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         Map<String, Object> info = new HashMap<>();
-        info.put("reportPath", REPORT_BASE_PATH);  // czr-java-001
-        info.put("backupPath", BACKUP_PATH);        // czr-java-001
-        info.put("serverPort", SERVER_PORT);        // czr-port-001
+        info.put("reportPath", getS3BucketName());
+        info.put("backupPath", getS3BucketName());
+        info.put("serverPort", SERVER_PORT);
         info.put("generatedAt", timestamp);
         return info;
     }

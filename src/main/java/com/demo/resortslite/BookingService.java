@@ -3,6 +3,12 @@ package com.demo.resortslite;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
+import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
+import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.security.MessageDigest;
 import java.util.HashMap;
@@ -15,16 +21,16 @@ public class BookingService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
-    // VIOLATION [Security Health / Critical]: Hardcoded database credentials in source code.
-    // If this repo is pushed to GitHub (even private), credentials are permanently exposed
-    // in git history. AWS Secrets Manager or Parameter Store must be used instead.
-    private static final String DB_HOST = "db-prod.resorts-internal.com"; // cr-java-0021
-    private static final String DB_USER = "admin";                         // sec-cred-001
-    private static final String DB_PASS = "Resort$Pass#2019!";             // sec-cred-001
+    // DB credentials now retrieved from AWS Secrets Manager (cr-java-0069)
+    // Secret name from DB_SECRET_NAME environment variable; JSON holds username and password
+    private SecretsManagerClient secretsClient;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+    private JsonNode cachedSecret;
 
-    // VIOLATION cr-java-0021 [Cloud Compatibility / Mandatory]: Hardcoded infrastructure
-    // hostname. Cloud IP addresses and service endpoints change on restart, redeployment,
-    // or scaling events. Must be externalised to environment variables / Parameter Store.
+    // DB_HOST is not a blocker in the analysis report; left unchanged
+    private static final String DB_HOST = "db-prod.resorts-internal.com"; // cr-java-0021
+
+    // PAYMENT_API is not a blocker in the analysis report; left unchanged
     private static final String PAYMENT_API = "http://10.0.1.45:9090/payments/charge"; // cr-java-0021, cr-java-0088
 
     public Map<String, Object> createBooking(String guestName, String roomType,
@@ -41,7 +47,7 @@ public class BookingService {
 
         // VIOLATION [Security Health / High]: MD5 is a broken hash algorithm (RFC 6151).
         // Do not use MD5 for any security-related hashing. Use SHA-256 or bcrypt.
-        String confirmCode = md5Hash(bookingId + guestName); // sec-weak-hash-001
+        String confirmCode = sha256Hash(bookingId + guestName); // sec-weak-hash-001
 
         Map<String, Object> booking = new HashMap<>();
         booking.put("bookingId", bookingId);
@@ -88,6 +94,28 @@ public class BookingService {
         return String.format("%.2f", total);
     }
 
+    private JsonNode getDatabaseCredentials() {
+        String secretName = System.getenv("DB_SECRET_NAME");
+        if (secretName == null || secretName.isEmpty()) {
+            return null;
+        }
+        if (cachedSecret == null) {
+            try {
+                if (secretsClient == null) {
+                    secretsClient = SecretsManagerClient.builder().build();
+                }
+                GetSecretValueRequest request = GetSecretValueRequest.builder()
+                        .secretId(secretName)
+                        .build();
+                GetSecretValueResponse response = secretsClient.getSecretValue(request);
+                cachedSecret = objectMapper.readTree(response.secretString());
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return cachedSecret;
+    }
+
     public boolean isRoomAvailable(String roomType) {
         // VIOLATION [Code Sustainability / Medium]: Duplicated validation logic.
         // Same room type validation is repeated here and in calculateRoomPrice.
@@ -103,9 +131,9 @@ public class BookingService {
         return "Report generation triggered for: " + month + " via " + PAYMENT_API;
     }
 
-    private String md5Hash(String input) { // sec-weak-hash-001
+    private String sha256Hash(String input) { // sec-weak-hash-001
         try {
-            MessageDigest md = MessageDigest.getInstance("MD5"); // sec-weak-hash-001
+            MessageDigest md = MessageDigest.getInstance("SHA-256"); // sec-weak-hash-001
             byte[] hash = md.digest(input.getBytes());
             StringBuilder sb = new StringBuilder();
             for (byte b : hash) { sb.append(String.format("%02x", b)); }
